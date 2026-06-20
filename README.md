@@ -21,6 +21,11 @@ CLI's hook.
 > to calibrate it** — see [Adapt it to your keyboard](#adapt-it-to-your-keyboard).
 > Non-Dell machines are not supported out of the box.
 
+> **🍎 macOS (Apple Silicon / Intel):** this fork adds a macOS backend that flashes the
+> **built-in MacBook keyboard backlight** via the private `CoreBrightness` framework —
+> no root, no calibration. See **[macos/README.md](macos/README.md)** for setup. The
+> rest of this document describes the original Windows/Dell path.
+
 ---
 
 ## How it works

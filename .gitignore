@@ -14,6 +14,9 @@ iasl*.exe
 *.dsl
 *.bin
 
+# Compiled macOS helper (build it with macos/build.sh)
+macos/kbdflash
+
 # Python
 __pycache__/
 *.pyc

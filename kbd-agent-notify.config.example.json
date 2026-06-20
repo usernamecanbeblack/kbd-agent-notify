@@ -10,13 +10,17 @@
     }
   },
   "kbd": {
-    "_comment": "Copy this file to kbd-agent-notify.config.json. Set enabled:true ONLY after you have calibrated the flash for your machine (see README). requestPath is optional; if omitted it defaults to <repo>/captures/kbd-request.json.",
+    "_comment": "Copy this file to kbd-agent-notify.config.json, then set enabled:true. WINDOWS/Dell: calibrate the flash first (see README) and use taskName/requestPath. macOS: no calibration; build macos/kbdflash and use the mac* keys below.",
     "enabled": false,
     "taskName": "KbdAgentNotify",
+    "macHelper": null,
+    "macKeyboardID": null,
+    "macLevel": 1.0,
+    "macFadeMs": 50,
     "patterns": {
-      "done": { "count": 2, "onMs": 300, "offMs": 300, "level": 0 },
-      "waiting": { "count": 2, "onMs": 300, "offMs": 300, "level": 0 },
-      "test": { "count": 2, "onMs": 300, "offMs": 300, "level": 0 }
+      "done": { "count": 2, "onMs": 250, "offMs": 200, "level": 0 },
+      "waiting": { "count": 3, "onMs": 130, "offMs": 130, "level": 0 },
+      "test": { "count": 2, "onMs": 250, "offMs": 200, "level": 0 }
     }
   }
 }

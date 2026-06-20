@@ -58,13 +58,23 @@ def default_config() -> dict[str, Any]:
             },
         },
         "kbd": {
-            # Dell keyboard-backlight pulse notifier. Requires the elevated
-            # Scheduled Task installed via `install-kbd-task` (the BFn WMI
-            # interface is admin-only; CLI hooks run non-elevated). When
-            # enabled, each pulse reads + restores the prior backlight state.
+            # Keyboard-backlight pulse notifier.
+            #
+            # Windows (Dell): requires the elevated Scheduled Task installed via
+            # `install-kbd-task` (the BFn WMI interface is admin-only; CLI hooks
+            # run non-elevated). Each pulse reads + restores the prior state.
+            #
+            # macOS (Apple Silicon / Intel): pulses the built-in keyboard backlight
+            # via the bundled `macos/kbdflash` helper (CoreBrightness, no root).
+            # Build it once with `macos/build.sh`. No calibration needed.
             "enabled": False,
             "taskName": "KbdAgentNotify",
             "requestPath": str(script_path().parent / "captures" / "kbd-request.json"),
+            # --- macOS-only settings ---
+            "macHelper": str(script_path().parent / "macos" / "kbdflash"),
+            "macKeyboardID": None,   # None = auto-detect the built-in keyboard
+            "macLevel": 1.0,         # lit brightness for a flash, 0.0-1.0
+            "macFadeMs": 50,         # hardware fade speed in ms (50 = snappy)
             "patterns": {
                 # 2 flashes, ~0.3 second each. level 0 = keep the saved level
                 # (this firmware drives brightness by mode bit, not a numeric level).
@@ -112,8 +122,68 @@ def is_windows() -> bool:
     return os.name == "nt"
 
 
+def is_macos() -> bool:
+    return sys.platform == "darwin"
+
+
 def kbd_pulse_script() -> Path:
     return script_path().parent / "kbd_pulse.ps1"
+
+
+def kbdflash_path(kbd: dict[str, Any]) -> Path:
+    """Path to the compiled macOS kbdflash helper (macos/kbdflash)."""
+    p = kbd.get("macHelper")
+    if p:
+        return Path(str(p)).expanduser()
+    return script_path().parent / "macos" / "kbdflash"
+
+
+def emit_kbd_backlight_macos(kbd: dict[str, Any], event: str, verbose: bool = False) -> bool:
+    """Flash the built-in keyboard backlight on macOS via the kbdflash helper.
+
+    Uses CoreBrightness' KeyboardBrightnessClient (no root needed for the built-in
+    keyboard). kbdflash reads the prior brightness + auto-brightness state, pulses,
+    and restores both. Returns True if the helper ran successfully.
+    """
+    helper = kbdflash_path(kbd)
+    if not helper.exists():
+        if verbose:
+            print(f"{APP_NAME}: kbdflash helper not found at {helper}", file=sys.stderr)
+        return False
+    pat = (kbd.get("patterns") or {}).get(event) or {}
+    count = int(pat.get("count", 2))
+    on_ms = int(pat.get("onMs", 300))
+    off_ms = int(pat.get("offMs", 300))
+    # In a pattern, level 0/None means "use the configured macOS lit level".
+    level = pat.get("level")
+    if not level:
+        level = kbd.get("macLevel", 1.0)
+    fade = int(kbd.get("macFadeMs", 50))
+    cmd = [
+        str(helper), "flash",
+        "--count", str(count),
+        "--on-ms", str(on_ms),
+        "--off-ms", str(off_ms),
+        "--level", str(level),
+        "--fade", str(fade),
+        "--quiet",
+    ]
+    kid = kbd.get("macKeyboardID")
+    if kid not in (None, "", "auto"):
+        cmd += ["--id", str(kid)]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        if result.returncode != 0:
+            if verbose:
+                print(f"{APP_NAME}: kbdflash failed: {(result.stderr or '').strip()}", file=sys.stderr)
+            return False
+        if verbose:
+            print(f"{APP_NAME}: kbdflash flashed for event={event}", file=sys.stderr)
+        return True
+    except Exception as exc:
+        if verbose:
+            print(f"{APP_NAME}: kbdflash error: {exc}", file=sys.stderr)
+        return False
 
 
 def emit_kbd_backlight(cfg: dict[str, Any], event: str, verbose: bool = False) -> bool:
@@ -125,10 +195,12 @@ def emit_kbd_backlight(cfg: dict[str, Any], event: str, verbose: bool = False) -
     was triggered (not whether the light physically pulsed; that is logged by
     the worker to captures/kbd-pulse.jsonl).
     """
-    if not is_windows():
-        return False
     kbd = cfg.get("kbd") or {}
     if not kbd.get("enabled", False):
+        return False
+    if is_macos():
+        return emit_kbd_backlight_macos(kbd, event, verbose=verbose)
+    if not is_windows():
         return False
     task_name = str(kbd.get("taskName", "KbdAgentNotify"))
     request_path = Path(str(kbd.get("requestPath", script_path().parent / "captures" / "kbd-request.json")))
@@ -1393,6 +1465,12 @@ def show_status(args: argparse.Namespace) -> int:
     print(f"config: {cfg_path} exists={cfg_path.exists()}")
     print(f"python: {sys.executable}")
     print(f"windows: {is_windows()}")
+    print(f"macos: {is_macos()}")
+    if is_macos():
+        cfg = load_config(args.config)
+        helper = kbdflash_path(cfg.get("kbd") or {})
+        print(f"kbdflash: {helper} exists={helper.exists()}")
+        print(f"kbd enabled: {(cfg.get('kbd') or {}).get('enabled', False)}")
     print(f"claude settings: {(Path.home() / '.claude' / 'settings.json')}")
     print(f"codex hooks: {(Path.home() / '.codex' / 'hooks.json')}")
     return 0
@@ -1403,10 +1481,43 @@ def _run_powershell(ps_args: list[str], elevated: bool = False, timeout: int = 6
     return subprocess.run(base + ps_args, capture_output=True, text=True, timeout=timeout)
 
 
+def kbd_test_macos(args: argparse.Namespace) -> int:
+    """macOS kbd-test: run the kbdflash helper directly (read or flash)."""
+    cfg = load_config(args.config)
+    kbd = cfg.get("kbd") or {}
+    helper = kbdflash_path(kbd)
+    if not helper.exists():
+        print(f"{APP_NAME}: kbdflash helper not found at {helper}", file=sys.stderr)
+        print("Build it first:  bash macos/build.sh", file=sys.stderr)
+        return 1
+    if args.read_only:
+        result = subprocess.run([str(helper), "read"], capture_output=True, text=True, timeout=15)
+        if result.stdout:
+            print(result.stdout.strip())
+        if result.stderr:
+            print(result.stderr.strip(), file=sys.stderr)
+        return result.returncode
+    # Temporarily force-enable so a fresh/default config can be tested, and apply
+    # any timing overrides without mutating the loaded config's nested dicts.
+    kbd = json.loads(json.dumps(kbd))
+    kbd["enabled"] = True
+    pat = kbd.setdefault("patterns", {}).setdefault(args.event, {})
+    if args.count:
+        pat["count"] = args.count
+    if args.on_ms:
+        pat["onMs"] = args.on_ms
+    if args.off_ms:
+        pat["offMs"] = args.off_ms
+    ok = emit_kbd_backlight_macos(kbd, args.event, verbose=True)
+    return 0 if ok else 2
+
+
 def kbd_test_command(args: argparse.Namespace) -> int:
-    """Run kbd_pulse.ps1 directly (must be elevated). --read-only just dumps state."""
+    """Test the keyboard-backlight pulse. --read-only just dumps current state."""
+    if is_macos():
+        return kbd_test_macos(args)
     if not is_windows():
-        print(f"{APP_NAME}: kbd-test requires Windows", file=sys.stderr)
+        print(f"{APP_NAME}: kbd-test requires Windows or macOS", file=sys.stderr)
         return 1
     script = kbd_pulse_script()
     if not script.exists():
