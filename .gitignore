@@ -1,0 +1,27 @@
+# Runtime config (copy from kbd-agent-notify.config.example.json; contains machine-specific paths/calibration)
+kbd-agent-notify.config.json
+
+# Captured firmware dumps, logs, and request files — these are PER-MACHINE and
+# often contain hardware identifiers. Never commit your own captures.
+captures/
+*.jsonl
+kbd-request.json
+
+# Downloaded tools (e.g. ACPICA iasl.exe) — fetch these yourself; don't redistribute.
+tools/
+iasl*.exe
+*.aml
+*.dsl
+*.bin
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
