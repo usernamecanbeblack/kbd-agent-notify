@@ -5,8 +5,8 @@ turn or is waiting for your input. A small, no-prompt desktop notifier for peopl
 who run coding agents in a terminal and miss when they're done.
 
 ```
-agent finishes  ->  keyboard backlight blinks twice
-agent waits     ->  keyboard backlight blinks twice
+agent finishes  ->  one pulse   (macOS: a single slow swell)
+agent waits     ->  two pulses  (macOS: two swells, the 2nd slower)
 ```
 
 It hooks into Claude Code and Codex CLI, and on each event it pulses the keyboard

@@ -8,13 +8,26 @@
 //   flash [opts]         -> read prior brightness, pulse, restore exactly
 //
 // flash options:
-//   --count N            number of flashes        (default 2)
-//   --on-ms MS           lit duration per flash    (default 300)
-//   --off-ms MS          gap duration per flash    (default 300)
-//   --level L            "lit" brightness 0.0-1.0  (default 1.0)
-//   --fade MS            hardware fade speed        (default 50; KBPulse manual=350)
+//   --shape S            "wave" (smooth swell) | "square" (hard blink)  (default wave)
+//   --count N            number of waves/flashes                        (default 2)
+//   --on-ms MS           wave: swell width; square: lit hold (ms)       (default 900)
+//   --off-ms MS          gap between waves/flashes (ms)                 (default 550)
+//   --level L            swell-to / "lit" brightness 0.0-1.0            (default 0.5)
+//   --fade MS            hardware fade speed (capped to one step in wave)(default 60)
+//   --steps N            wave smoothness: sub-steps per swell           (default 48)
+//   --slowdown F         wave: each swell F× longer (lower frequency)   (default 1.0)
+//   --floor L            wave dip target when resting lit 0.0-1.0       (default 0.0)
+//   --lit-threshold L    resting brightness at/above which we dip       (default 0.2)
 //   --id K               keyboard ID               (default: auto-detect built-in)
 //   --quiet              suppress diagnostics
+//
+// The "wave" shape eases brightness along a half-sine (b = prior + (target-prior)*
+// sin(pi*phase)), anchored at your resting brightness so it never jumps — it rises and
+// falls like an ocean swell instead of blinking. The direction adapts to the resting
+// state: if the keyboard is dark (prior < lit-threshold) the swell rises toward
+// --level (a glow-on); if it is already lit (prior >= lit-threshold) the swell dips
+// toward --floor (a fade-off). With --slowdown > 1 each successive swell is longer than
+// the last — a decreasing frequency, like surf settling.
 //
 // Why this works where setProperty did not: KeyboardBrightnessClient's
 // -setBrightness:fadeSpeed:commit:forKeyboard: with commit=true pushes the value
@@ -97,13 +110,22 @@ func argValue(_ name: String, _ def: String) -> String {
     return def
 }
 func hasFlag(_ name: String) -> Bool { CommandLine.arguments.contains(name) }
-func sleepMs(_ ms: Int) { if ms > 0 { usleep(useconds_t(ms) * 1000) } }
+func sleepMs(_ ms: Int) { if ms > 0 { Thread.sleep(forTimeInterval: Double(ms) / 1000.0) } }
 
 let args = CommandLine.arguments
 let cmd = args.count > 1 ? args[1] : "flash"
 let quiet = hasFlag("--quiet")
 func errln(_ s: String) { FileHandle.standardError.write((s + "\n").data(using: .utf8)!) }
 func log(_ s: String) { if !quiet { errln(s) } }
+
+// Best-effort cleanup on Ctrl-C: exit() does not unwind `defer`, so the SIGINT handler
+// must restore state itself. A top-level (non-capturing) handler reads this global,
+// which the flash command points at its own restore() closure.
+var sigintCleanup: (() -> Void)? = nil
+func onSIGINT(_ sig: Int32) {
+    sigintCleanup?()
+    exit(130)
+}
 
 guard let kb = KbdBacklight() else {
     errln("kbdflash: could not bind CoreBrightness KeyboardBrightnessClient")
@@ -117,36 +139,71 @@ case "read":
     exit(0)
 
 case "flash":
-    let count = Int(argValue("--count", "2")) ?? 2
-    let onMs  = Int(argValue("--on-ms", "300")) ?? 300
-    let offMs = Int(argValue("--off-ms", "300")) ?? 300
-    let level = Float(argValue("--level", "1.0")) ?? 1.0
-    let fade  = Int32(argValue("--fade", "50")) ?? 50
+    let shape = argValue("--shape", "wave")
+    let count = max(1, Int(argValue("--count", "2")) ?? 2)
+    let onMs  = max(1, Int(argValue("--on-ms", "900")) ?? 900)
+    let offMs = max(0, Int(argValue("--off-ms", "550")) ?? 550)
+    let level = Float(argValue("--level", "0.5")) ?? 0.5
+    let fade  = Int32(argValue("--fade", "60")) ?? 60
+    let steps = max(2, Int(argValue("--steps", "48")) ?? 48)
+    let slowdown = max(1.0, Double(argValue("--slowdown", "1.0")) ?? 1.0)
+    let floor = Float(argValue("--floor", "0.0")) ?? 0.0
+    let litThreshold = Float(argValue("--lit-threshold", "0.2")) ?? 0.2
     let kid   = UInt64(argValue("--id", "")) ?? kb.detectID()
 
     let prior = kb.brightness(kid)
     let autoWasOn = kb.isAuto(kid)
-    let restingLit = prior > 0.0001
-    let pulseVal:   Float = restingLit ? 0.0   : level
-    let betweenVal: Float = restingLit ? level : 0.0
-    log("kbdflash: id=\(kid) prior=\(prior) auto=\(autoWasOn) count=\(count) on=\(onMs) off=\(offMs) level=\(level) fade=\(fade)")
+    log("kbdflash: id=\(kid) prior=\(prior) auto=\(autoWasOn) shape=\(shape) count=\(count) on=\(onMs) off=\(offMs) level=\(level) floor=\(floor) litThr=\(litThreshold) fade=\(fade) steps=\(steps) slowdown=\(slowdown)")
 
     // Always restore exact prior brightness AND prior auto-brightness setting.
     func restore() {
         kb.setBrightness(prior, fade: fade, kid)
         kb.setAuto(autoWasOn, kid)
     }
-    signal(SIGINT) { _ in exit(130) }
+    sigintCleanup = restore
+    signal(SIGINT, onSIGINT)
     defer { restore() }
 
     // Auto-brightness would fight the pulse — suspend it for the duration.
     if autoWasOn { kb.setAuto(false, kid) }
 
-    for _ in 0..<max(1, count) {
-        kb.setBrightness(pulseVal, fade: fade, kid)
-        sleepMs(onMs)
-        kb.setBrightness(betweenVal, fade: fade, kid)
-        sleepMs(offMs)
+    if shape == "square" {
+        // Hard blink: invert against the resting state so there is always contrast.
+        let restingLit = prior > 0.0001
+        let pulseVal:   Float = restingLit ? 0.0   : level
+        let betweenVal: Float = restingLit ? level : 0.0
+        for _ in 0..<count {
+            kb.setBrightness(pulseVal, fade: fade, kid)
+            sleepMs(onMs)
+            kb.setBrightness(betweenVal, fade: fade, kid)
+            sleepMs(offMs)
+        }
+    } else {
+        // Ocean swell, anchored at `prior` so it never jumps. Direction adapts to the
+        // resting state: dark keyboard -> rise toward `level` (glow-on); already-lit
+        // keyboard -> dip toward `floor` (fade-off, the opposite swell). Each successive
+        // swell is `slowdown`x longer (a lower frequency), like surf settling. fadeSpeed
+        // is capped to one step so the software curve — not the hardware — sets the shape.
+        let restingLit = prior >= litThreshold
+        let target: Float = restingLit ? floor : level
+        log("kbdflash: wave dir=\(restingLit ? "dip (fade-off)" : "rise (glow-on)") target=\(target)")
+        var waveMs = Double(onMs)
+        var gapMs  = Double(offMs)
+        for i in 0..<count {
+            let thisWave = max(steps, Int(waveMs.rounded()))
+            let stepDur  = max(1, thisWave / steps)
+            let stepFade = Int32(min(Int(fade), stepDur))
+            for s in 0...steps {
+                let phase = Double(s) / Double(steps)        // 0...1
+                let env   = Float(sin(Double.pi * phase))    // 0 -> 1 -> 0
+                kb.setBrightness(prior + (target - prior) * env, fade: stepFade, kid)
+                sleepMs(stepDur)
+            }
+            kb.setBrightness(prior, fade: stepFade, kid)     // settle exactly at rest
+            if i < count - 1 { sleepMs(Int(gapMs.rounded())) }
+            waveMs *= slowdown
+            gapMs  *= slowdown
+        }
     }
     restore()
     exit(0)

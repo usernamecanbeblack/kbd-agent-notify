@@ -73,15 +73,21 @@ def default_config() -> dict[str, Any]:
             # --- macOS-only settings ---
             "macHelper": str(script_path().parent / "macos" / "kbdflash"),
             "macKeyboardID": None,   # None = auto-detect the built-in keyboard
-            "macLevel": 1.0,         # lit brightness for a flash, 0.0-1.0
-            "macFadeMs": 50,         # hardware fade speed in ms (50 = snappy)
+            "macLevel": 0.5,         # swell-to brightness for a flash, 0.0-1.0 (gentle)
+            "macFadeMs": 60,         # hardware fade speed in ms (capped per step in wave)
+            "macShape": "wave",      # "wave" = smooth ocean swell; "square" = hard blink
+            "macSteps": 48,          # wave smoothness (sub-steps per swell)
+            "macSlowdown": 1.5,      # each successive swell this much longer (lower freq)
+            "macFloor": 0.0,         # wave dip target when keyboard is already lit
+            "macLitThreshold": 0.2,  # rest >= this -> dip (fade-off); below -> rise (glow-on)
             "patterns": {
-                # 2 flashes, ~0.3 second each. level 0 = keep the saved level
-                # (this firmware drives brightness by mode bit, not a numeric level).
-                # The pulse inverts the resting state: dark->flash on, lit->flash off.
-                EVENT_DONE: {"count": 2, "onMs": 300, "offMs": 300, "level": 0},
-                EVENT_WAITING: {"count": 2, "onMs": 300, "offMs": 300, "level": 0},
-                EVENT_TEST: {"count": 2, "onMs": 300, "offMs": 300, "level": 0},
+                # macOS (wave): onMs = swell width, offMs = gap between swells, count =
+                # number of swells, level 0 = use macLevel. Windows/Dell ignores the
+                # wave keys and treats count/onMs/offMs as a square blink.
+                # done = one slow swell; waiting = two swells (the 2nd slower).
+                EVENT_DONE: {"count": 1, "onMs": 1100, "offMs": 550, "level": 0},
+                EVENT_WAITING: {"count": 2, "onMs": 900, "offMs": 550, "level": 0},
+                EVENT_TEST: {"count": 2, "onMs": 900, "offMs": 550, "level": 0},
             },
         },
     }
@@ -152,20 +158,33 @@ def emit_kbd_backlight_macos(kbd: dict[str, Any], event: str, verbose: bool = Fa
         return False
     pat = (kbd.get("patterns") or {}).get(event) or {}
     count = int(pat.get("count", 2))
-    on_ms = int(pat.get("onMs", 300))
-    off_ms = int(pat.get("offMs", 300))
+    on_ms = int(pat.get("onMs", 900))
+    off_ms = int(pat.get("offMs", 550))
     # In a pattern, level 0/None means "use the configured macOS lit level".
     level = pat.get("level")
     if not level:
-        level = kbd.get("macLevel", 1.0)
-    fade = int(kbd.get("macFadeMs", 50))
+        level = kbd.get("macLevel", 0.5)
+    fade = int(kbd.get("macFadeMs", 60))
+    # Smooth "ocean swell" controls (a pattern may override the kbd-wide default).
+    shape = pat.get("shape") or kbd.get("macShape", "wave")
+    steps = int(pat.get("steps", kbd.get("macSteps", 48)))
+    slowdown = float(pat.get("slowdown", kbd.get("macSlowdown", 1.0)))
+    # Direction adapts to the resting state: rise toward `level` when dark, or dip
+    # toward `floor` when the keyboard is already lit at/above `litThreshold`.
+    floor = float(pat.get("floor", kbd.get("macFloor", 0.0)))
+    lit_threshold = float(pat.get("litThreshold", kbd.get("macLitThreshold", 0.2)))
     cmd = [
         str(helper), "flash",
+        "--shape", str(shape),
         "--count", str(count),
         "--on-ms", str(on_ms),
         "--off-ms", str(off_ms),
         "--level", str(level),
+        "--floor", str(floor),
+        "--lit-threshold", str(lit_threshold),
         "--fade", str(fade),
+        "--steps", str(steps),
+        "--slowdown", str(slowdown),
         "--quiet",
     ]
     kid = kbd.get("macKeyboardID")

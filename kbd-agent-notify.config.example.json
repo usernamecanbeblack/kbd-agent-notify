@@ -10,17 +10,22 @@
     }
   },
   "kbd": {
-    "_comment": "Copy this file to kbd-agent-notify.config.json, then set enabled:true. WINDOWS/Dell: calibrate the flash first (see README) and use taskName/requestPath. macOS: no calibration; build macos/kbdflash and use the mac* keys below.",
+    "_comment": "Copy this file to kbd-agent-notify.config.json, then set enabled:true. WINDOWS/Dell: calibrate the flash first (see README) and use taskName/requestPath; Windows ignores the mac* wave keys and treats count/onMs/offMs as a square blink. macOS: no calibration; build macos/kbdflash and use the mac* keys below. On macOS the flash is a smooth 'ocean swell' (macShape:wave): onMs = swell width, offMs = gap between swells, macSlowdown = how much longer each successive swell is (lower frequency).",
     "enabled": false,
     "taskName": "KbdAgentNotify",
     "macHelper": null,
     "macKeyboardID": null,
-    "macLevel": 1.0,
-    "macFadeMs": 50,
+    "macLevel": 0.5,
+    "macFadeMs": 60,
+    "macShape": "wave",
+    "macSteps": 48,
+    "macSlowdown": 1.5,
+    "macFloor": 0.0,
+    "macLitThreshold": 0.2,
     "patterns": {
-      "done": { "count": 2, "onMs": 250, "offMs": 200, "level": 0 },
-      "waiting": { "count": 3, "onMs": 130, "offMs": 130, "level": 0 },
-      "test": { "count": 2, "onMs": 250, "offMs": 200, "level": 0 }
+      "done":    { "count": 1, "onMs": 1100, "offMs": 550, "level": 0 },
+      "waiting": { "count": 2, "onMs": 900,  "offMs": 550, "level": 0 },
+      "test":    { "count": 2, "onMs": 900,  "offMs": 550, "level": 0 }
     }
   }
 }
